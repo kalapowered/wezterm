@@ -254,6 +254,14 @@ impl ScreenOrAlt {
         self.alt_screen_is_active
     }
 
+    pub fn inactive(&self) -> &Screen {
+        if self.alt_screen_is_active {
+            &self.screen
+        } else {
+            &self.alt_screen
+        }
+    }
+
     pub fn saved_cursor(&mut self) -> &mut Option<SavedCursor> {
         if self.alt_screen_is_active {
             &mut self.alt_screen.saved_cursor
@@ -741,6 +749,21 @@ impl TerminalState {
     /// the alternate screen).
     pub fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
+    }
+
+    /// Returns a reference to the screen that is not active: the alternate
+    /// screen while the primary screen is shown, and the primary screen with
+    /// its scrollback while a full screen application holds the alternate
+    /// screen.
+    ///
+    /// Neither screen is dropped when the other becomes active, so code that
+    /// serializes the terminal state needs the one `screen()` does not
+    /// return in order to reproduce what the user sees once the application
+    /// exits. What the alternate screen still holds depends on how it was
+    /// left: `CSI ? 1047 l` erases it on the way out, while `CSI ? 47 l` and
+    /// `CSI ? 1049 l` leave its contents alone.
+    pub fn inactive_screen(&self) -> &Screen {
+        self.screen.inactive()
     }
 
     fn set_clipboard_contents(

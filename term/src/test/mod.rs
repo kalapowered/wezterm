@@ -1127,6 +1127,60 @@ fn test_ri() {
 }
 
 #[test]
+fn test_inactive_screen() {
+    fn contents(screen: &Screen) -> Vec<String> {
+        screen
+            .visible_lines()
+            .iter()
+            .map(|line| line.as_str().trim_end().to_string())
+            .collect()
+    }
+
+    let mut term = TestTerm::new(2, 8, 0);
+    term.print("primary\r\n");
+
+    // While the primary screen is active the alternate screen is the
+    // inactive one, and it is still blank.
+    assert_eq!(contents(term.screen()), vec!["primary", ""]);
+    assert_eq!(contents(term.inactive_screen()), vec!["", ""]);
+
+    term.print("\x1b[?1047h");
+    term.print("alt");
+    assert_eq!(contents(term.screen()), vec!["", "alt"]);
+    assert_eq!(contents(term.inactive_screen()), vec!["primary", ""]);
+
+    // Leaving through mode 1047 erases the alternate screen on the way out.
+    term.print("\x1b[?1047l");
+    assert_eq!(contents(term.screen()), vec!["primary", ""]);
+    assert_eq!(contents(term.inactive_screen()), vec!["", ""]);
+
+    // Mode 47 leaves the alternate screen's contents where they are.
+    term.print("\x1b[?47h");
+    term.cup(0, 0);
+    term.print("kept");
+    term.print("\x1b[?47l");
+    assert_eq!(contents(term.screen()), vec!["primary", ""]);
+    assert_eq!(contents(term.inactive_screen()), vec!["kept", ""]);
+}
+
+#[test]
+fn test_inactive_screen_keeps_scrollback() {
+    let mut term = TestTerm::new(2, 8, 4);
+    term.print("one\r\ntwo\r\nthree\r\nfour");
+
+    // The primary screen has scrolled twice, so two rows are in scrollback.
+    term.print("\x1b[?1047h");
+    let primary = term.inactive_screen();
+    assert_eq!(primary.scrollback_rows(), 4);
+    let rows: Vec<String> = primary
+        .all_lines()
+        .iter()
+        .map(|line| line.as_str().trim_end().to_string())
+        .collect();
+    assert_eq!(rows, vec!["one", "two", "three", "four"]);
+}
+
+#[test]
 fn test_saved_cursor_per_screen() {
     let mut term = TestTerm::new(4, 8, 0);
     assert!(term.saved_cursor(false).is_none());
