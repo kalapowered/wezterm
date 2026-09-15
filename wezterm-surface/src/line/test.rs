@@ -3,6 +3,7 @@
 use super::*;
 use crate::hyperlink::{Hyperlink, Rule};
 use crate::line::clusterline::ClusteredLine;
+use crate::line::storage::CellStorage;
 use crate::SEQ_ZERO;
 use alloc::sync::Arc;
 use k9::assert_equal as assert_eq;
@@ -143,6 +144,10 @@ C(
         last_cell_width: Some(
             1,
         ),
+        last_cell_len: Some(
+            1,
+        ),
+        cell_starts: None,
     },
 )
 "#
@@ -193,8 +198,12 @@ C(
         ],
         len: 23,
         last_cell_width: Some(
-            1,
+            2,
         ),
+        last_cell_len: Some(
+            4,
+        ),
+        cell_starts: None,
     },
 )
 "#
@@ -219,6 +228,8 @@ C(
         clusters: [],
         len: 0,
         last_cell_width: None,
+        last_cell_len: None,
+        cell_starts: None,
     },
 )
 "#
@@ -284,6 +295,10 @@ Line {
             last_cell_width: Some(
                 1,
             ),
+            last_cell_len: Some(
+                1,
+            ),
+            cell_starts: None,
         },
     ),
     zones: [],
@@ -299,6 +314,350 @@ Line {
 }
 "#
     );
+}
+
+/// A cell can hold part of what the grapheme rules would otherwise join with
+/// the cell that follows it; a terminal produces that by placing each of them
+/// in a column of its own. Compressing the line for scrollback has to keep
+/// those cells apart, along with their widths, their attributes and the
+/// wrapped marker on the last of them.
+#[test]
+fn cluster_representation_keeps_split_cells() {
+    let wrapped = CellAttributes::default().set_wrapped(true).clone();
+    let line = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("\u{1f1ec}", 2, CellAttributes::default()),
+            Cell::blank(),
+            Cell::new_grapheme_with_width("\u{1f1e7}", 2, wrapped.clone()),
+            Cell::blank_with_attrs(wrapped),
+        ],
+        SEQ_ZERO,
+    );
+
+    let mut compressed = line.clone();
+    compressed.compress_for_scrollback();
+
+    let cells: Vec<_> = compressed
+        .visible_cells()
+        .map(|cell| (cell.cell_index(), cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            (0, "\u{1f1ec}".to_string(), 2),
+            (2, "\u{1f1e7}".to_string(), 2),
+        ]
+    );
+    assert_eq!(compressed.len(), 4);
+
+    // The wrapped marker is on the final cell, and can still be cleared and
+    // set again once the line is compressed.
+    assert!(compressed.last_cell_was_wrapped());
+    compressed.set_last_cell_was_wrapped(false, SEQ_ZERO);
+    assert!(!compressed.last_cell_was_wrapped());
+    compressed.set_last_cell_was_wrapped(true, SEQ_ZERO);
+    assert!(compressed.last_cell_was_wrapped());
+
+    compressed.coerce_vec_storage();
+    assert_eq!(line, compressed);
+}
+
+/// Appending has to keep the cells apart too, otherwise reflow rebuilds a
+/// line by joining cells that were deliberately placed in columns of their
+/// own.
+#[test]
+fn cluster_append_keeps_split_cells() {
+    let mut line = Line::new(SEQ_ZERO);
+    line.set_cell_grapheme(0, "\u{1f1ec}", 2, CellAttributes::default(), SEQ_ZERO);
+    line.set_cell_grapheme(2, "\u{1f1e7}", 2, CellAttributes::default(), SEQ_ZERO);
+
+    let cells: Vec<_> = line
+        .visible_cells()
+        .map(|cell| (cell.cell_index(), cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            (0, "\u{1f1ec}".to_string(), 2),
+            (2, "\u{1f1e7}".to_string(), 2),
+        ]
+    );
+    assert_eq!(line.len(), 4);
+}
+
+/// The same for joining two lines back together, where the cells come from
+/// a line that recorded its own boundaries.
+#[test]
+fn cluster_append_line_keeps_split_cells() {
+    let mut compressed = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("\u{1f1e7}", 2, CellAttributes::default()),
+            Cell::blank(),
+            Cell::new_grapheme_with_width("\u{1f1e8}", 2, CellAttributes::default()),
+            Cell::blank(),
+        ],
+        SEQ_ZERO,
+    );
+    compressed.compress_for_scrollback();
+    assert_eq!(compressed.visible_cells().count(), 2);
+
+    let mut line = Line::new(SEQ_ZERO);
+    line.set_cell_grapheme(0, "\u{1f1ec}", 2, CellAttributes::default(), SEQ_ZERO);
+    line.append_line(compressed, SEQ_ZERO);
+
+    // One more cell after the offsets are already recorded.
+    line.set_cell_grapheme(6, "\u{1f1e9}", 2, CellAttributes::default(), SEQ_ZERO);
+
+    let cells: Vec<_> = line
+        .visible_cells()
+        .map(|cell| (cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            ("\u{1f1ec}".to_string(), 2),
+            ("\u{1f1e7}".to_string(), 2),
+            ("\u{1f1e8}".to_string(), 2),
+            ("\u{1f1e9}".to_string(), 2),
+        ]
+    );
+    assert_eq!(line.len(), 8);
+}
+
+/// A cell can also hold part of an emoji sequence that the grapheme rules
+/// would join through a zero width joiner.
+#[test]
+fn cluster_append_keeps_joined_emoji_apart() {
+    let mut line = Line::new(SEQ_ZERO);
+    line.set_cell_grapheme(
+        0,
+        "\u{1f469}\u{200d}",
+        2,
+        CellAttributes::default(),
+        SEQ_ZERO,
+    );
+    line.set_cell_grapheme(2, "\u{1f4bb}", 2, CellAttributes::default(), SEQ_ZERO);
+
+    let cells: Vec<_> = line
+        .visible_cells()
+        .map(|cell| (cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            ("\u{1f469}\u{200d}".to_string(), 2),
+            ("\u{1f4bb}".to_string(), 2),
+        ]
+    );
+    assert_eq!(line.len(), 4);
+}
+
+/// Pruning has to take the recorded offsets with it, so that what is left
+/// still reads back as the cells it was given.
+#[test]
+fn cluster_prune_trailing_blanks_with_recorded_cells() {
+    let mut line = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("\u{1f1ec}", 2, CellAttributes::default()),
+            Cell::blank(),
+            Cell::new_grapheme_with_width("\u{1f1e7}", 2, CellAttributes::default()),
+            Cell::blank(),
+            Cell::blank(),
+            Cell::blank(),
+        ],
+        SEQ_ZERO,
+    );
+    line.compress_for_scrollback();
+    line.prune_trailing_blanks(SEQ_ZERO);
+
+    let cells: Vec<_> = line
+        .visible_cells()
+        .map(|cell| (cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![("\u{1f1ec}".to_string(), 2), ("\u{1f1e7}".to_string(), 2),]
+    );
+    assert_eq!(line.len(), 4);
+
+    // Appending after a prune still keeps the cells apart.
+    line.set_cell_grapheme(4, "\u{1f1e8}", 2, CellAttributes::default(), SEQ_ZERO);
+    let texts: Vec<_> = line
+        .visible_cells()
+        .map(|cell| cell.str().to_string())
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "\u{1f1ec}".to_string(),
+            "\u{1f1e7}".to_string(),
+            "\u{1f1e8}".to_string(),
+        ]
+    );
+}
+
+/// A cell the compact storage cannot record the width of keeps cell storage
+/// whichever way it arrives.
+#[test]
+fn cluster_append_declines_unsupported_widths() {
+    let mut line = Line::new(SEQ_ZERO);
+    line.set_cell_grapheme(0, "x", 3, CellAttributes::default(), SEQ_ZERO);
+    assert_eq!(line.len(), 3);
+    let cells: Vec<_> = line
+        .visible_cells()
+        .map(|cell| (cell.str().to_string(), cell.width()))
+        .collect();
+    assert_eq!(cells, vec![("x".to_string(), 3)]);
+
+    // Joining such a line onto one that is in compact storage moves the
+    // destination out of it first.
+    let wide = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("x", 3, CellAttributes::default()),
+            Cell::blank(),
+            Cell::blank(),
+        ],
+        SEQ_ZERO,
+    );
+    let mut destination = Line::new(SEQ_ZERO);
+    destination.set_cell_grapheme(0, "a", 1, CellAttributes::default(), SEQ_ZERO);
+    assert!(matches!(&destination.cells, CellStorage::C(_)));
+    destination.append_line(wide, SEQ_ZERO);
+    assert!(matches!(&destination.cells, CellStorage::V(_)));
+    assert_eq!(destination.len(), 4);
+}
+
+/// The wrapped marker belongs to the cell that ends the row, and a cell the
+/// compact storage cannot record still has to carry it.
+#[test]
+fn wrap_marker_on_unsupported_width() {
+    let line = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("x", 3, CellAttributes::default()),
+            Cell::blank(),
+            Cell::blank(),
+            Cell::new_grapheme_with_width("y", 1, CellAttributes::default()),
+        ],
+        SEQ_ZERO,
+    );
+
+    let mut rows = line.wrap(3, SEQ_ZERO);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].len(), 3);
+    assert_eq!(rows[1].len(), 1);
+    assert!(rows[0].last_cell_was_wrapped());
+
+    // Every column the cell covers carries the marker, which is what the
+    // compact storage rebuilds them as.
+    let marked: Vec<bool> = rows[0]
+        .cells_mut()
+        .iter()
+        .map(|cell| cell.attrs().wrapped())
+        .collect();
+    assert_eq!(marked, vec![true, true, true]);
+
+    rows[0].set_last_cell_was_wrapped(false, SEQ_ZERO);
+    assert!(!rows[0].last_cell_was_wrapped());
+    let marked: Vec<bool> = rows[0]
+        .cells_mut()
+        .iter()
+        .map(|cell| cell.attrs().wrapped())
+        .collect();
+    assert_eq!(marked, vec![false, false, false]);
+}
+
+/// A wrapped row whose final cell is wide still compresses, because the
+/// marker now reads back the same from either storage.
+#[test]
+fn wrap_marker_on_wide_cell_compresses() {
+    let mut line = Line::from_text("a\u{754c}", &CellAttributes::default(), SEQ_ZERO, None);
+    line.set_last_cell_was_wrapped(true, SEQ_ZERO);
+
+    let before = line.clone();
+    line.compress_for_scrollback();
+    assert!(matches!(&line.cells, CellStorage::C(_)));
+    assert!(line.last_cell_was_wrapped());
+
+    line.coerce_vec_storage();
+    assert_eq!(line, before);
+}
+
+/// Attribute runs are measured in columns and cannot record more than
+/// `u16::MAX` of them, so a longer run of matching cells is split.
+#[test]
+fn cluster_representation_long_run() {
+    let width = u16::MAX as usize + 16;
+    let line = Line::from_text(
+        &"x".repeat(width),
+        &CellAttributes::default(),
+        SEQ_ZERO,
+        None,
+    );
+
+    let mut compressed = line.clone();
+    compressed.compress_for_scrollback();
+    assert_eq!(compressed.len(), width);
+    assert_eq!(compressed.visible_cells().count(), width);
+
+    compressed.coerce_vec_storage();
+    assert_eq!(line, compressed);
+}
+
+/// Pruning works on whole cells. A cell that ends with a space but holds
+/// more than one is not a blank and has to survive.
+#[test]
+fn cluster_prune_trailing_blanks_by_cell() {
+    let mut line = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("a", 1, CellAttributes::default()),
+            // U+0600 begins a cluster and takes the space with it.
+            Cell::new_grapheme_with_width("\u{600} ", 1, CellAttributes::default()),
+            Cell::blank(),
+            Cell::blank(),
+        ],
+        SEQ_ZERO,
+    );
+    line.compress_for_scrollback();
+    line.prune_trailing_blanks(SEQ_ZERO);
+
+    let texts: Vec<_> = line
+        .visible_cells()
+        .map(|cell| cell.str().to_string())
+        .collect();
+    assert_eq!(texts, vec!["a".to_string(), "\u{600} ".to_string()]);
+    assert_eq!(line.len(), 2);
+}
+
+/// A cell wider than two columns, and a covered column that carries
+/// attributes of its own, are both outside what the compact storage can
+/// hold, so the line stays as it is.
+#[test]
+fn cluster_representation_declines_what_it_cannot_hold() {
+    let mut wide = Line::from_cells(
+        vec![
+            Cell::new_grapheme_with_width("\u{1f1ec}", 3, CellAttributes::default()),
+            Cell::blank(),
+            Cell::blank(),
+        ],
+        SEQ_ZERO,
+    );
+    let before = wide.clone();
+    wide.compress_for_scrollback();
+    assert_eq!(wide, before);
+
+    let mut covered =
+        Line::from_text_with_wrapped_last_col("\u{754c}", &CellAttributes::default(), SEQ_ZERO);
+    let before = covered.clone();
+    covered.compress_for_scrollback();
+    assert_eq!(covered, before);
+
+    // A wide cell whose covered column was cut away is not there to rebuild.
+    let mut truncated = Line::from_text("\u{754c}", &CellAttributes::default(), SEQ_ZERO, None);
+    truncated.resize(1, SEQ_ZERO);
+    let before = truncated.clone();
+    truncated.compress_for_scrollback();
+    assert_eq!(truncated, before);
+    assert_eq!(truncated.len(), 1);
 }
 
 fn bold() -> CellAttributes {
@@ -411,6 +770,10 @@ C(
         last_cell_width: Some(
             1,
         ),
+        last_cell_len: Some(
+            1,
+        ),
+        cell_starts: None,
     },
 )
 "#
@@ -496,6 +859,10 @@ ClusteredLine {
     last_cell_width: Some(
         1,
     ),
+    last_cell_len: Some(
+        1,
+    ),
+    cell_starts: None,
 }
 "#
     );
@@ -596,6 +963,10 @@ Line {
             last_cell_width: Some(
                 1,
             ),
+            last_cell_len: Some(
+                1,
+            ),
+            cell_starts: None,
         },
     ),
     zones: [],

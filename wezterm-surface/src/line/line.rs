@@ -72,6 +72,36 @@ impl PartialEq for Line {
     }
 }
 
+/// The compact storage records one bit of width per cell, so a cell it holds
+/// is either one or two columns wide.
+fn width_fits_cluster(width: usize) -> bool {
+    width == 1 || width == 2
+}
+
+/// Whether the compact storage can hold these cells without changing them.
+///
+/// Besides the width it can record, it rebuilds the column a wide cell
+/// covers as a one column blank carrying that cell's own attributes, so a
+/// covered column that is anything else, or a wide cell whose covered column
+/// is not there at all, has to stay in cell storage.
+fn is_compressible(cells: &[Cell]) -> bool {
+    let mut idx = 0;
+    while idx < cells.len() {
+        let cell = &cells[idx];
+        let width = cell.width();
+        if !width_fits_cluster(width) || idx + width > cells.len() {
+            return false;
+        }
+        for covered in &cells[idx + 1..idx + width] {
+            if covered.width() != 1 || covered.str() != " " || covered.attrs() != cell.attrs() {
+                return false;
+            }
+        }
+        idx += width;
+    }
+    true
+}
+
 impl Line {
     pub fn with_width_and_cell(width: usize, cell: Cell, seqno: SequenceNo) -> Self {
         let mut cells = Vec::with_capacity(width);
@@ -780,7 +810,7 @@ impl Line {
                 // their intended cell content
                 cl.append_grapheme(" ", 1, CellAttributes::blank());
             }
-            if idx == cl.len() {
+            if idx == cl.len() && width_fits_cluster(width) {
                 cl.append_grapheme(text, width, attr);
                 self.invalidate_implicit_hyperlinks(seqno);
                 self.invalidate_zones();
@@ -833,7 +863,7 @@ impl Line {
                 // their intended cell content
                 cl.append_grapheme(" ", 1, CellAttributes::blank());
             }
-            if idx == cl.len() {
+            if idx == cl.len() && width_fits_cluster(cell.width()) {
                 cl.append(cell);
                 return;
             }
@@ -1066,9 +1096,20 @@ impl Line {
     /// space. Subsequent mutations will incur some overhead to
     /// re-materialize the storage in a form that is suitable
     /// for mutation.
+    ///
+    /// The line keeps the cells it holds: their text, their widths, their
+    /// attributes and the wrapped marker on the last of them all read back
+    /// the same afterwards, including where a cell holds part of what the
+    /// grapheme rules would otherwise join into one. A line the compact
+    /// storage cannot hold exactly is left as it is.
     pub fn compress_for_scrollback(&mut self) {
         let cv = match &self.cells {
-            CellStorage::V(v) => ClusteredLine::from_cell_vec(v.len(), self.visible_cells()),
+            CellStorage::V(v) => {
+                if !is_compressible(v) {
+                    return;
+                }
+                ClusteredLine::from_cell_vec(v.len(), self.visible_cells())
+            }
             CellStorage::C(_) => return,
         };
         self.cells = CellStorage::C(cv);
@@ -1106,9 +1147,18 @@ impl Line {
             return;
         }
 
+        // The final cell can cover more than one column, and the columns it
+        // covers carry its attributes, so the marker goes on all of them
+        // rather than on whichever column happens to come last.
+        let last = self
+            .visible_cells()
+            .last()
+            .map(|cell| (cell.cell_index(), cell.width().max(1)));
         let cells = self.coerce_vec_storage();
-        if let Some(cell) = cells.last_mut() {
-            cell.attrs_mut().set_wrapped(wrapped);
+        if let Some((index, width)) = last {
+            for cell in cells.iter_mut().skip(index).take(width) {
+                cell.attrs_mut().set_wrapped(wrapped);
+            }
         }
     }
 
@@ -1117,6 +1167,14 @@ impl Line {
     /// This function is used by rewrapping logic when joining wrapped
     /// lines back together.
     pub fn append_line(&mut self, other: Line, seqno: SequenceNo) {
+        if !other
+            .visible_cells()
+            .all(|cell| width_fits_cluster(cell.width()))
+        {
+            // The compact storage cannot record those widths, so move this
+            // line out of it before the cells arrive.
+            self.coerce_vec_storage();
+        }
         match &mut self.cells {
             CellStorage::V(cells) => {
                 for cell in other.visible_cells() {
