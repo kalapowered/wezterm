@@ -1076,6 +1076,23 @@ impl TerminalState {
         }
     }
 
+    /// Returns true when a wrap is deferred: the last printed cell reached
+    /// the right margin, autowrap was on, and the cursor was left where it
+    /// is, so the next printable character moves to the following line
+    /// before it is placed.
+    ///
+    /// The cursor position does not express this. The coordinates are the
+    /// same whether or not a wrap is pending, and a double width cell at the
+    /// margin leaves the cursor short of the final column while still
+    /// deferring a wrap. Turning autowrap off afterwards does not cancel a
+    /// wrap that is already deferred; moving the cursor does. Code that
+    /// serializes the terminal state and later restores it therefore has to
+    /// carry the flag across, or the first character after the restore lands
+    /// in the wrong cell.
+    pub fn pending_wrap(&self) -> bool {
+        self.wrap_next
+    }
+
     /// Returns the current cell attributes of the screen
     pub fn pen(&self) -> CellAttributes {
         self.pen.clone()

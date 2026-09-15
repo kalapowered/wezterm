@@ -1127,6 +1127,50 @@ fn test_ri() {
 }
 
 #[test]
+fn test_pending_wrap() {
+    let mut term = TestTerm::new(3, 3, 10);
+    assert!(!term.pending_wrap());
+
+    term.print("ab");
+    assert_eq!((term.cursor_pos().x, term.cursor_pos().y), (2, 0));
+    assert!(!term.pending_wrap());
+
+    // Filling the final column leaves the cursor there with the wrap
+    // deferred until the next printable character.
+    term.print("c");
+    assert_eq!((term.cursor_pos().x, term.cursor_pos().y), (2, 0));
+    assert!(term.pending_wrap());
+
+    // Turning autowrap off does not cancel a wrap that is already deferred.
+    term.set_auto_wrap(false);
+    assert!(term.pending_wrap());
+    term.set_auto_wrap(true);
+
+    term.print("d");
+    assert_eq!((term.cursor_pos().x, term.cursor_pos().y), (1, 1));
+    assert!(!term.pending_wrap());
+
+    // Moving the cursor cancels the deferred wrap.
+    term.print("ef");
+    assert!(term.pending_wrap());
+    term.cup(0, 0);
+    assert!(!term.pending_wrap());
+
+    // A double width cell that reaches the margin defers a wrap without
+    // leaving the cursor in the final column.
+    term.cup(0, 2);
+    term.print("a\u{754c}");
+    assert_eq!((term.cursor_pos().x, term.cursor_pos().y), (1, 2));
+    assert!(term.pending_wrap());
+
+    // With autowrap off the margin never defers a wrap.
+    term.set_auto_wrap(false);
+    term.cup(0, 0);
+    term.print("xyz");
+    assert!(!term.pending_wrap());
+}
+
+#[test]
 fn test_scroll_margins() {
     let mut term = TestTerm::new(3, 1, 10);
     term.print("1\n2\n3\n4\n");
