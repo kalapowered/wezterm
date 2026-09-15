@@ -138,14 +138,31 @@ impl TabStop {
     }
 }
 
+/// The state that DECSC stores and DECRC puts back. Each screen keeps its
+/// own, so the primary and the alternate screen do not overwrite each
+/// other's.
 #[derive(Debug, Clone)]
-pub(crate) struct SavedCursor {
-    position: CursorPosition,
-    wrap_next: bool,
-    pen: CellAttributes,
-    dec_origin_mode: bool,
-    g0_charset: CharSet,
-    g1_charset: CharSet,
+pub struct SavedCursor {
+    /// Where the cursor was, in absolute zero-based coordinates of the
+    /// visible screen. They are absolute whatever DECOM was set to, because
+    /// DECRC turns origin mode off before it applies them. `shape` is saved
+    /// and put back with the position; `visibility` and `seqno` are the
+    /// internal cursor's own bookkeeping rather than part of the save, and
+    /// [`TerminalState::cursor_pos`] is where a caller reads the live cursor
+    /// visibility from.
+    pub position: CursorPosition,
+    /// Whether a wrap was deferred when the cursor was saved.
+    pub wrap_next: bool,
+    /// The rendition that was in effect: colours, intensity, underline and
+    /// the rest of the pen, including any active hyperlink.
+    pub pen: CellAttributes,
+    /// Whether DECOM was enabled when the cursor was saved. DECRC restores
+    /// it after it has placed the cursor.
+    pub dec_origin_mode: bool,
+    /// The character set designated as G0.
+    pub g0_charset: CharSet,
+    /// The character set designated as G1.
+    pub g1_charset: CharSet,
     // TODO: selective_erase when supported
 }
 
@@ -242,6 +259,14 @@ impl ScreenOrAlt {
             &mut self.alt_screen.saved_cursor
         } else {
             &mut self.screen.saved_cursor
+        }
+    }
+
+    pub fn saved_cursor_for(&self, alt_screen: bool) -> Option<&SavedCursor> {
+        if alt_screen {
+            self.alt_screen.saved_cursor.as_ref()
+        } else {
+            self.screen.saved_cursor.as_ref()
         }
     }
 
@@ -1074,6 +1099,21 @@ impl TerminalState {
             },
             seqno: self.cursor.seqno,
         }
+    }
+
+    /// Returns the cursor state that DECSC last stored for one of the two
+    /// screens, or `None` if nothing has been saved for it. Pass `true` for
+    /// the alternate screen and `false` for the primary screen.
+    ///
+    /// Each screen has its own saved cursor and neither is discarded when the
+    /// other screen becomes active, so code that serializes the terminal
+    /// state has to read both. More than DECSC changes what is stored:
+    /// `CSI ? 1049 h` saves the primary screen's cursor on the way into the
+    /// alternate screen, a resize rewrites the inactive screen's saved
+    /// coordinates and clears its deferred wrap, and a soft reset discards
+    /// both. DECRC reads the saved cursor without disturbing it.
+    pub fn saved_cursor(&self, alt_screen: bool) -> Option<&SavedCursor> {
+        self.screen.saved_cursor_for(alt_screen)
     }
 
     /// Returns true when a wrap is deferred: the last printed cell reached

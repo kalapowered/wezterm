@@ -8,7 +8,7 @@ mod c1;
 mod csi;
 mod image;
 // mod selection; FIXME: port to render layer
-use crate::color::ColorPalette;
+use crate::color::{ColorAttribute, ColorPalette};
 use k9::assert_equal as assert_eq;
 use std::sync::{Arc, Mutex};
 use wezterm_escape_parser::csi::{Edit, EraseInDisplay, EraseInLine};
@@ -1124,6 +1124,63 @@ fn test_ri() {
     let mut term = TestTerm::new(3, 1, 10);
     term.print("1\n\u{8d}\n");
     assert_all_contents(&term, file!(), line!(), &["1", "", ""]);
+}
+
+#[test]
+fn test_saved_cursor_per_screen() {
+    let mut term = TestTerm::new(4, 8, 0);
+    assert!(term.saved_cursor(false).is_none());
+    assert!(term.saved_cursor(true).is_none());
+
+    // Save a red cursor with line drawing designated as G1 on the primary
+    // screen.
+    term.print("\x1b)0\x1b[31m");
+    term.cup(3, 1);
+    term.print("\x1b7");
+
+    // Switch to the alternate screen without disturbing that save, then save
+    // a different cursor there.
+    term.print("\x1b[?1047h");
+    assert!(term.saved_cursor(true).is_none());
+    term.print("\x1b)B\x1b[42m");
+    term.cup(1, 2);
+    term.print("\x1b7");
+
+    let alt = term.saved_cursor(true).expect("saved on alternate screen");
+    assert_eq!((alt.position.x, alt.position.y), (1, 2));
+    assert_eq!(alt.pen.background(), ColorAttribute::PaletteIndex(2));
+    assert_eq!(alt.g1_charset, CharSet::Ascii);
+
+    let primary = term.saved_cursor(false).expect("saved on primary screen");
+    assert_eq!((primary.position.x, primary.position.y), (3, 1));
+    assert_eq!(primary.pen.foreground(), ColorAttribute::PaletteIndex(1));
+    assert_eq!(primary.g1_charset, CharSet::DecLineDrawing);
+    assert_eq!(primary.g0_charset, CharSet::Ascii);
+    assert!(!primary.wrap_next);
+    assert!(!primary.dec_origin_mode);
+}
+
+#[test]
+fn test_saved_cursor_origin_mode() {
+    let mut term = TestTerm::new(4, 4, 0);
+
+    // The scroll region is the last two rows, and origin mode makes CUP 1;1
+    // mean the top of that region rather than the top of the screen.
+    term.set_scroll_region(2, 3);
+    term.print("\x1b[?6h");
+    term.cup(0, 0);
+    assert_eq!((term.cursor_pos().x, term.cursor_pos().y), (0, 2));
+
+    // Filling the final column defers a wrap. DECSC records that, along with
+    // the absolute row rather than the row origin mode reports.
+    term.print("abcd");
+    assert!(term.pending_wrap());
+    term.print("\x1b7");
+
+    let saved = term.saved_cursor(false).expect("saved on primary screen");
+    assert_eq!((saved.position.x, saved.position.y), (3, 2));
+    assert!(saved.wrap_next);
+    assert!(saved.dec_origin_mode);
 }
 
 #[test]
