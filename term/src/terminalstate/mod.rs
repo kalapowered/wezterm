@@ -766,6 +766,17 @@ impl TerminalState {
         self.screen.inactive()
     }
 
+    /// Returns a mutable reference to the primary screen with its
+    /// scrollback, whichever screen is active.
+    ///
+    /// While the primary screen is shown this is the screen that
+    /// `screen_mut()` returns. While a full screen application holds the
+    /// alternate screen, `screen_mut()` returns the alternate screen and
+    /// this returns the primary screen that `inactive_screen()` reads.
+    pub fn primary_screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen.screen
+    }
+
     fn set_clipboard_contents(
         &self,
         selection: ClipboardSelection,

@@ -1626,3 +1626,54 @@ fn test_caller_mark_moves_with_its_line_when_the_screen_scrolls() {
     term.print("\x1b[T");
     assert_eq!(caller_marks(term.screen()), vec![false, false, true, false]);
 }
+
+#[test]
+fn test_primary_screen_mut_is_the_active_screen_while_the_primary_shows() {
+    let mut term = TestTerm::new(2, 8, 4);
+    term.print("one\r\ntwo\r\nthree\r\nfour");
+
+    let phys = term.screen().phys_row(1);
+    term.primary_screen_mut()
+        .line_mut(phys)
+        .set_caller_mark(true);
+    assert_eq!(caller_marks(term.screen()), vec![false, true]);
+    assert_eq!(visible_text(term.screen()), vec!["three", "four"]);
+}
+
+#[test]
+fn test_primary_screen_mut_reaches_the_primary_while_the_alternate_shows() {
+    let mut term = TestTerm::new(2, 8, 4);
+    term.print("one\r\ntwo\r\nthree\r\nfour");
+    assert_eq!(term.screen().scrollback_rows(), 4);
+
+    term.print("\x1b[?1049h");
+    term.print("alt");
+    assert!(term.is_alt_screen_active());
+
+    // The screen that is shown is the alternate screen, and it has no
+    // scrollback. The accessor reaches the primary screen behind it, the
+    // rows above its screen as well as the rows on it.
+    assert_eq!(term.screen().scrollback_rows(), 2);
+    term.primary_screen_mut().line_mut(0).set_caller_mark(true);
+    term.primary_screen_mut().line_mut(3).set_caller_mark(true);
+    assert_eq!(caller_marks(term.screen()), vec![false, false]);
+    let held: Vec<bool> = term
+        .inactive_screen()
+        .all_lines()
+        .iter()
+        .map(|line| line.caller_mark())
+        .collect();
+    assert_eq!(held, vec![true, false, false, true]);
+
+    // The rows above the primary screen can be given up while the
+    // alternate screen is shown; the rows on the primary screen stay.
+    term.primary_screen_mut().erase_scrollback();
+    assert_eq!(term.inactive_screen().scrollback_rows(), 2);
+    assert_eq!(visible_text(term.inactive_screen()), vec!["three", "four"]);
+    assert_eq!(caller_marks(term.inactive_screen()), vec![false, true]);
+
+    term.print("\x1b[?1049l");
+    assert_eq!(visible_text(term.screen()), vec!["three", "four"]);
+    assert_eq!(caller_marks(term.screen()), vec![false, true]);
+    assert_eq!(term.screen().scrollback_rows(), 2);
+}
