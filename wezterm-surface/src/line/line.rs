@@ -154,7 +154,10 @@ impl Line {
     /// encourage using Line directly as a hash key.
     pub fn compute_shape_hash(&self) -> [u8; 16] {
         let mut hasher = SipHasher::new();
-        self.bits.bits().hash(&mut hasher);
+        // The caller's mark has no part in how the line is shaped.
+        (self.bits & !LineBits::CALLER_MARK)
+            .bits()
+            .hash(&mut hasher);
         for cell in self.visible_cells() {
             cell.compute_shape_hash(&mut hasher);
         }
@@ -242,6 +245,7 @@ impl Line {
     /// Wrap the line so that it fits within the provided width.
     /// Returns the list of resultant line(s)
     pub fn wrap(self, width: usize, seqno: SequenceNo) -> Vec<Self> {
+        let marked = self.caller_mark();
         let mut cells: Vec<CellRef> = self.visible_cells().collect();
         if let Some(end_idx) = cells.iter().rposition(|c| c.str() != " ") {
             cells.truncate(end_idx + 1);
@@ -268,6 +272,12 @@ impl Line {
                     (*cell.attrs()).clone(),
                     seqno,
                 );
+            }
+
+            if marked {
+                for line in lines.iter_mut() {
+                    line.set_caller_mark(true);
+                }
             }
 
             lines
@@ -648,6 +658,25 @@ impl Line {
                 phys.compress_for_scrollback();
             }
         }
+    }
+
+    /// Returns true if the caller has marked the line.
+    /// The mark follows the line's content: see `set_caller_mark`.
+    #[inline]
+    pub fn caller_mark(&self) -> bool {
+        self.bits.contains(LineBits::CALLER_MARK)
+    }
+
+    /// Sets or clears the caller's mark on the line. The mark is carried to
+    /// the lines that `wrap` makes from a marked line, to a line that
+    /// `append_line`s a marked line, and to a clone and to the tail of a
+    /// `split_off`. A line made by `Line::new` or the other constructors is
+    /// not marked, and clearing a line with `resize_and_clear` removes the
+    /// mark. Setting or clearing it changes no cell and does not change the
+    /// line's sequence number.
+    #[inline]
+    pub fn set_caller_mark(&mut self, marked: bool) {
+        self.bits.set(LineBits::CALLER_MARK, marked);
     }
 
     /// Returns true if the line contains a hyperlink
@@ -1189,6 +1218,9 @@ impl Line {
                     cl.append(cell.as_cell());
                 }
             }
+        }
+        if other.caller_mark() {
+            self.set_caller_mark(true);
         }
         self.update_last_change_seqno(seqno);
         self.invalidate_zones();

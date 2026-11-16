@@ -3,7 +3,9 @@
 use super::*;
 use crate::hyperlink::{Hyperlink, Rule};
 use crate::line::clusterline::ClusteredLine;
+use crate::line::linebits::LineBits;
 use crate::line::storage::CellStorage;
+use crate::SequenceNo;
 use crate::SEQ_ZERO;
 use alloc::sync::Arc;
 use k9::assert_equal as assert_eq;
@@ -982,4 +984,156 @@ Line {
 }
 "#
     );
+}
+
+fn text_line(text: &str, seqno: SequenceNo) -> Line {
+    Line::from_text(text, &CellAttributes::default(), seqno, None)
+}
+
+fn marked(mut line: Line) -> Line {
+    line.set_caller_mark(true);
+    line
+}
+
+#[test]
+fn caller_mark_does_not_widen_the_line() {
+    assert_eq!(core::mem::size_of::<LineBits>(), 2);
+}
+
+#[test]
+fn caller_mark_is_absent_on_a_new_line() {
+    assert!(!Line::new(1).caller_mark());
+    assert!(!Line::with_width(10, 1).caller_mark());
+    assert!(!Line::with_width_and_cell(10, Cell::blank(), 1).caller_mark());
+    assert!(!Line::from_cells(vec![Cell::blank(); 3], 1).caller_mark());
+    assert!(!text_line("abc", 1).caller_mark());
+    assert!(!Line::from("abc").caller_mark());
+}
+
+#[test]
+fn caller_mark_changes_no_cell_and_no_sequence_number() {
+    let mut line = text_line("abc def", 7);
+    let before_cells: Vec<Cell> = line.visible_cells().map(|c| c.as_cell()).collect();
+    let before_seqno = line.current_seqno();
+
+    line.set_caller_mark(true);
+    assert!(line.caller_mark());
+    assert_eq!(line.current_seqno(), before_seqno);
+    assert!(!line.changed_since(before_seqno));
+    let after_cells: Vec<Cell> = line.visible_cells().map(|c| c.as_cell()).collect();
+    assert_eq!(after_cells, before_cells);
+    assert_eq!(line.as_str(), "abc def");
+
+    line.set_caller_mark(false);
+    assert!(!line.caller_mark());
+    assert_eq!(line.current_seqno(), before_seqno);
+    assert_eq!(line, text_line("abc def", 7));
+}
+
+#[test]
+fn caller_mark_leaves_the_other_bits_alone() {
+    let mut line = text_line("abc", 1);
+    line.set_double_width(2);
+    line.set_caller_mark(true);
+    assert!(line.is_double_width());
+    line.set_caller_mark(false);
+    assert!(line.is_double_width());
+    line.set_caller_mark(true);
+    line.set_single_width(3);
+    assert!(line.caller_mark());
+}
+
+#[test]
+fn caller_mark_is_not_part_of_the_shape_hash() {
+    let plain = text_line("abc", 1);
+    let flagged = marked(text_line("abc", 1));
+    assert_eq!(plain.compute_shape_hash(), flagged.compute_shape_hash());
+}
+
+#[test]
+fn caller_mark_follows_a_clone() {
+    let line = marked(text_line("abc", 1));
+    assert!(line.clone().caller_mark());
+    assert!(!text_line("abc", 1).clone().caller_mark());
+}
+
+#[test]
+fn caller_mark_follows_both_halves_of_a_split() {
+    let mut head = marked(text_line("abcdef", 1));
+    let tail = head.split_off(3, 2);
+    assert!(head.caller_mark());
+    assert!(tail.caller_mark());
+    assert_eq!(tail.as_str(), "def");
+
+    let mut head = text_line("abcdef", 1);
+    let tail = head.split_off(3, 2);
+    assert!(!head.caller_mark());
+    assert!(!tail.caller_mark());
+}
+
+#[test]
+fn caller_mark_follows_every_line_that_a_wrap_makes() {
+    let lines = marked(text_line("abcdefghij", 1)).wrap(4, 2);
+    assert_eq!(lines.len(), 3);
+    for line in &lines {
+        assert!(line.caller_mark());
+    }
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| l.as_str().trim_end().to_string())
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["abcd".to_string(), "efgh".to_string(), "ij".to_string()]
+    );
+
+    let lines = text_line("abcdefghij", 1).wrap(4, 2);
+    assert_eq!(lines.len(), 3);
+    for line in &lines {
+        assert!(!line.caller_mark());
+    }
+}
+
+#[test]
+fn caller_mark_follows_a_wrap_that_makes_one_line() {
+    let lines = marked(text_line("abc", 1)).wrap(10, 2);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].caller_mark());
+}
+
+#[test]
+fn caller_mark_follows_a_wrap_of_a_blank_line() {
+    let lines = marked(Line::with_width(10, 1)).wrap(4, 2);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].caller_mark());
+}
+
+#[test]
+fn caller_mark_follows_the_line_that_is_appended() {
+    let mut line = text_line("0123", 1);
+    line.append_line(marked(text_line("4567", 1)), 2);
+    assert!(line.caller_mark());
+    assert_eq!(line.as_str(), "01234567");
+
+    let mut line = marked(text_line("0123", 1));
+    line.append_line(text_line("4567", 1), 2);
+    assert!(line.caller_mark());
+
+    let mut line = text_line("0123", 1);
+    line.append_line(text_line("4567", 1), 2);
+    assert!(!line.caller_mark());
+}
+
+#[test]
+fn caller_mark_follows_an_append_into_a_wide_cell_line() {
+    let mut line = text_line("グループ", 1);
+    line.append_line(marked(text_line("aa", 1)), 2);
+    assert!(line.caller_mark());
+}
+
+#[test]
+fn caller_mark_is_removed_by_clearing_the_line() {
+    let mut line = marked(text_line("abc", 1));
+    line.resize_and_clear(5, 2, CellAttributes::default());
+    assert!(!line.caller_mark());
 }

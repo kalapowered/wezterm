@@ -49,5 +49,15 @@ bitflags! {
         /// Otherwise, the auto-detect direction is used, falling back
         /// to the direction specified by the RTL bit.
         const AUTO_DETECT_DIRECTION = 1<<8;
+
+        /// A mark that the caller sets on a line with `Line::set_caller_mark`.
+        /// The library never sets it by itself. It follows the line's
+        /// content: a line made by wrapping a marked line is marked, a
+        /// line that appends a marked line becomes marked, a clone and
+        /// the tail of a split are marked, and a line made new is not.
+        /// The terminal's margin-bounded scroll copies carry it to the
+        /// line that receives the cells. Setting or clearing it changes
+        /// no cell and no sequence number.
+        const CALLER_MARK = 1<<9;
     }
 }
