@@ -579,6 +579,7 @@ impl Screen {
                 let src_row = dest_row + num_rows;
 
                 // Copy the source cells first
+                let marked = self.lines[src_row].caller_mark();
                 let cells = {
                     self.lines[src_row]
                         .cells_mut()
@@ -589,9 +590,13 @@ impl Screen {
                         .collect::<Vec<_>>()
                 };
 
-                // and place them into the dest
+                // and place them into the dest, which carries the
+                // source's mark along with the cells
                 let dest_row = self.line_mut(dest_row);
                 dest_row.update_last_change_seqno(seqno);
+                if marked {
+                    dest_row.set_caller_mark(true);
+                }
                 let dest_range =
                     left_and_right_margins.start..left_and_right_margins.start + cells.len();
                 if dest_row.len() < dest_range.end {
@@ -849,6 +854,7 @@ impl Screen {
                 let dest_row = src_row + num_rows;
 
                 // Copy the source cells first
+                let marked = self.lines[src_row].caller_mark();
                 let cells = {
                     self.lines[src_row]
                         .cells_mut()
@@ -859,9 +865,13 @@ impl Screen {
                         .collect::<Vec<_>>()
                 };
 
-                // and place them into the dest
+                // and place them into the dest, which carries the
+                // source's mark along with the cells
                 let dest_row = self.line_mut(dest_row);
                 dest_row.update_last_change_seqno(seqno);
+                if marked {
+                    dest_row.set_caller_mark(true);
+                }
                 let dest_range =
                     left_and_right_margins.start..left_and_right_margins.start + cells.len();
                 if dest_row.len() < dest_range.end {

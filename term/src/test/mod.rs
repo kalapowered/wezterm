@@ -1533,3 +1533,96 @@ fn test_hyperlinks() {
         Compare::TEXT | Compare::ATTRS,
     );
 }
+
+fn caller_marks(screen: &Screen) -> Vec<bool> {
+    screen
+        .visible_lines()
+        .iter()
+        .map(|line| line.caller_mark())
+        .collect()
+}
+
+fn visible_text(screen: &Screen) -> Vec<String> {
+    screen
+        .visible_lines()
+        .iter()
+        .map(|line| line.as_str().trim_end().to_string())
+        .collect()
+}
+
+fn mark_visible_row(term: &mut Terminal, row: i64) {
+    let screen = term.screen_mut();
+    let phys = screen.phys_row(row);
+    screen.line_mut(phys).set_caller_mark(true);
+}
+
+#[test]
+fn test_scroll_up_within_margins_carries_the_caller_mark() {
+    let mut term = TestTerm::new(4, 8, 0);
+    term.print("aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd");
+    // Columns 3 to 6 are the margins, so each scroll is a copy of cells
+    // between line objects rather than a move of the lines.
+    term.print("\x1b[?69h\x1b[3;6s");
+    mark_visible_row(&mut term, 2);
+    assert_eq!(caller_marks(term.screen()), vec![false, false, true, false]);
+
+    term.print("\x1b[S");
+    assert_eq!(
+        visible_text(term.screen()),
+        vec!["aabbbbaa", "bbccccbb", "ccddddcc", "dd    dd"]
+    );
+    // Row 1 received the cells of the marked row 2 and carries its mark.
+    // Row 2 received unmarked cells but still holds its own cells outside
+    // the margins, so it keeps its mark.
+    assert_eq!(caller_marks(term.screen()), vec![false, true, true, false]);
+}
+
+#[test]
+fn test_scroll_down_within_margins_carries_the_caller_mark() {
+    let mut term = TestTerm::new(4, 8, 0);
+    term.print("aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd");
+    term.print("\x1b[?69h\x1b[3;6s");
+    mark_visible_row(&mut term, 1);
+    assert_eq!(caller_marks(term.screen()), vec![false, true, false, false]);
+
+    term.print("\x1b[T");
+    assert_eq!(
+        visible_text(term.screen()),
+        vec!["aa    aa", "bbaaaabb", "ccbbbbcc", "ddccccdd"]
+    );
+    // Row 2 received the cells of the marked row 1 and carries its mark.
+    // Row 1 received unmarked cells but keeps its own mark.
+    assert_eq!(caller_marks(term.screen()), vec![false, true, true, false]);
+}
+
+#[test]
+fn test_scroll_within_margins_marks_nothing_that_was_not_marked() {
+    let mut term = TestTerm::new(4, 8, 0);
+    term.print("aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd");
+    term.print("\x1b[?69h\x1b[3;6s");
+    term.print("\x1b[S\x1b[T\x1b[2S\x1b[2T");
+    assert_eq!(caller_marks(term.screen()), vec![false; 4]);
+}
+
+#[test]
+fn test_caller_mark_moves_with_its_line_when_the_screen_scrolls() {
+    let mut term = TestTerm::new(4, 8, 4);
+    term.print("aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd");
+    mark_visible_row(&mut term, 0);
+    mark_visible_row(&mut term, 2);
+
+    // A scroll of the whole screen moves the line objects, and a line that
+    // is scrolled in has no mark. The marked top line goes into scrollback.
+    term.print("\x1b[S");
+    assert_eq!(caller_marks(term.screen()), vec![false, true, false, false]);
+    let all: Vec<bool> = term
+        .screen()
+        .all_lines()
+        .iter()
+        .map(|line| line.caller_mark())
+        .collect();
+    assert_eq!(all, vec![true, false, true, false, false]);
+
+    term.print("\x1b[T");
+    assert_eq!(caller_marks(term.screen()), vec![false, false, true, false]);
+}
